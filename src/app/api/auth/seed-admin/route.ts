@@ -49,15 +49,15 @@ export async function GET() {
         password: "driver123",
         role: "driver",
         phone: "+919876543211",
-        vehicleNumber: "AMB-101",
+        // vehicleNumber is set when the driver registers or updates their profile
       },
       {
-        name: "King George Hospital",
+        name: "Hospital Staff",
         email: "hospital@smartambulance.com",
         password: "hospital123",
         role: "hospital",
         phone: "+919876543212",
-        hospitalId: "HOSP-001",
+        // hospitalId is set when the staff member registers or is assigned by admin
       },
       {
         name: "Patient User",

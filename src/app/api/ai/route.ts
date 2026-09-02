@@ -4,7 +4,7 @@ import axios from "axios";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
 
-function mockTriage(symptoms: string[]): {
+function ruleBasedTriage(symptoms: string[]): {
   score: number;
   category: string;
   notes: string;
@@ -145,16 +145,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Fallback to mock triage
-    const mockResult = mockTriage(symptoms);
+    // Fallback to rule-based triage when Ollama is unavailable
+    const ruleResult = ruleBasedTriage(symptoms);
 
-    console.log("[AI TRIAGE] Mock fallback result:", mockResult);
+    console.log("[AI TRIAGE] Rule-based fallback result:", ruleResult);
 
     return NextResponse.json(
       {
         success: true,
-        ...mockResult,
-        source: "mock",
+        ...ruleResult,
+        source: "rule-based",
       },
       { status: 200 }
     );

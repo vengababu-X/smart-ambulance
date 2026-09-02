@@ -3,6 +3,7 @@ import { connectToDatabase } from "@/lib/mongodb";
 import Ambulance from "@/models/Ambulance";
 import Emergency from "@/models/Emergency";
 import Hospital from "@/models/Hospital";
+import User from "@/models/User";
 
 function determinePriority(
   severityScore: number,
@@ -55,6 +56,111 @@ function generateEmergencyId(): string {
   return `EMG-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
+/**
+ * Unified ambulance lookup:
+ * 1. Query Ambulance collection (spatial → any available → emergency override)
+ * 2. If no Ambulance record found, check approved Driver users with vehicleNumber
+ * 3. Auto-create Ambulance record for the driver if found
+ */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+async function findAvailableAmbulance(
+  latitude: number,
+  longitude: number
+): Promise<{
+  ambulance: any | null;
+  source: string;
+}> {
+  // Step 1: Try $nearSphere spatial query on Ambulance collection
+  let ambulance = await Ambulance.findOne({
+    status: "AVAILABLE",
+    location: {
+      $nearSphere: {
+        $geometry: {
+          type: "Point",
+          coordinates: [longitude, latitude],
+        },
+        $maxDistance: 25000,
+      },
+    },
+  }).lean();
+
+  if (ambulance) {
+    console.log("[DISPATCH] Found ambulance via spatial query:", ambulance.vehicleNumber);
+    return { ambulance: ambulance as any, source: "spatial" };
+  }
+
+  // Step 2: Any AVAILABLE ambulance in the collection
+  ambulance = await Ambulance.findOne({ status: "AVAILABLE" })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  if (ambulance) {
+    console.log("[DISPATCH] Found ambulance via fallback (any available):", ambulance.vehicleNumber);
+    return { ambulance: ambulance as any, source: "fallback" };
+  }
+
+  // Step 3: Emergency override — any non-DISPATCHED ambulance
+  ambulance = await Ambulance.findOne({ status: { $ne: "DISPATCHED" } })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  if (ambulance) {
+    console.log("[DISPATCH] Found ambulance via emergency override:", ambulance.vehicleNumber);
+    return { ambulance: ambulance as any, source: "emergency-override" };
+  }
+
+  // Step 4: Check approved Driver users with a vehicleNumber
+  // Create Ambulance records on-the-fly for any drivers missing them
+  const approvedDrivers = await User.find({
+    role: "driver",
+    isApproved: true,
+    vehicleNumber: { $exists: true, $ne: "" },
+  })
+    .select("name vehicleNumber phone")
+    .lean();
+
+  for (const driver of approvedDrivers) {
+    if (!driver.vehicleNumber) continue;
+
+    // Check if an Ambulance record already exists for this vehicle
+    const existingAmbulance = await Ambulance.findOne({
+      vehicleNumber: driver.vehicleNumber,
+    }).lean();
+
+    if (existingAmbulance) {
+      // Update status to AVAILABLE if it was stuck in another state
+      if (existingAmbulance.status !== "AVAILABLE") {
+        await Ambulance.findByIdAndUpdate(existingAmbulance._id, {
+          status: "AVAILABLE",
+        });
+        console.log("[DISPATCH] Reset ambulance status to AVAILABLE:", driver.vehicleNumber);
+      }
+      ambulance = await Ambulance.findOne({
+        vehicleNumber: driver.vehicleNumber,
+      }).lean();
+      if (ambulance) {
+        return { ambulance: ambulance as any, source: "driver-user-reset" };
+      }
+    } else {
+      // Auto-create Ambulance record for this driver
+      const newAmbulance = await Ambulance.create({
+        vehicleNumber: driver.vehicleNumber,
+        driverName: driver.name,
+        status: "AVAILABLE",
+        location: {
+          type: "Point",
+          coordinates: [longitude, latitude], // Default to patient location
+        },
+      });
+      console.log("[DISPATCH] Auto-created ambulance for driver:", driver.vehicleNumber);
+      return { ambulance: newAmbulance.toObject() as any, source: "driver-user-created" };
+    }
+  }
+
+  // No ambulances found anywhere
+  return { ambulance: null, source: "none" };
+}
+
 export async function POST(request: NextRequest) {
   try {
     await connectToDatabase();
@@ -66,7 +172,7 @@ export async function POST(request: NextRequest) {
       ? body.symptoms.map((s: unknown) => String(s).trim()).filter(Boolean)
       : typeof body.symptoms === "string"
       ? body.symptoms
-          .split(/[,\n]/)
+          .split(/[,\\n]/)
           .map((s: string) => s.trim())
           .filter(Boolean)
       : [];
@@ -103,66 +209,43 @@ export async function POST(request: NextRequest) {
     const priority = determinePriority(severityScore, symptoms);
 
     // ═══════════════════════════════════════════════════════
-    // AMBULANCE MATCHING — with geospatial fallback
+    // UNIFIED AMBULANCE MATCHING
     // ═══════════════════════════════════════════════════════
+    const { ambulance: matchedAmbulance, source: ambulanceSource } =
+      await findAvailableAmbulance(latitude, longitude);
 
-    // Step 1: Try $nearSphere spatial query
-    let ambulance = await Ambulance.findOne({
-      status: "AVAILABLE",
-      location: {
-        $nearSphere: {
-          $geometry: {
-            type: "Point",
-            coordinates: [longitude, latitude],
-          },
-          $maxDistance: 25000,
-        },
-      },
-    }).lean();
+    if (!matchedAmbulance) {
+      // Dynamic check: are there any drivers at all?
+      const driverCount = await User.countDocuments({
+        role: "driver",
+        isApproved: true,
+      });
+      const ambulanceCount = await Ambulance.countDocuments({});
 
-    let ambulanceSource = "spatial";
+      let errorMessage = "No ambulances available for dispatch.";
+      if (driverCount === 0 && ambulanceCount === 0) {
+        errorMessage =
+          "No drivers or ambulances registered in the system. Please register driver accounts and approve them from the Admin Dashboard.";
+      } else if (ambulanceCount === 0) {
+        errorMessage =
+          "No ambulance records found. Approve pending driver accounts from the Admin Dashboard to auto-create ambulance records.";
+      } else {
+        errorMessage =
+          "All ambulances are currently busy. Please try again in a few moments.";
+      }
 
-    // Step 2: Fallback — any AVAILABLE ambulance if spatial query returned nothing
-    if (!ambulance) {
-      console.log(
-        "[DISPATCH] Spatial query returned no ambulances. Falling back to any available ambulance."
-      );
-      ambulance = await Ambulance.findOne({ status: "AVAILABLE" })
-        .sort({ createdAt: 1 })
-        .lean();
-      ambulanceSource = "fallback";
-    }
-
-    // Step 3: Absolute last resort — pick any ambulance at all (override MAINTENANCE)
-    if (!ambulance) {
-      console.log(
-        "[DISPATCH] No available ambulances. Attempting to assign any ambulance."
-      );
-      ambulance = await Ambulance.findOne({
-        status: { $ne: "DISPATCHED" },
-      })
-        .sort({ createdAt: 1 })
-        .lean();
-      ambulanceSource = "emergency-override";
-    }
-
-    if (!ambulance) {
       return NextResponse.json(
-        {
-          success: false,
-          message:
-            "No ambulances exist in the system. Please seed the database first via /api/seed.",
-        },
+        { success: false, message: errorMessage },
         { status: 404 }
       );
     }
 
     console.log(
-      `[DISPATCH] Ambulance assigned: ${ambulance.vehicleNumber} (source: ${ambulanceSource})`
+      `[DISPATCH] Ambulance assigned: ${matchedAmbulance.vehicleNumber} (source: ${ambulanceSource})`
     );
 
     // Mark ambulance as DISPATCHED
-    await Ambulance.findByIdAndUpdate(ambulance._id, {
+    await Ambulance.findByIdAndUpdate(matchedAmbulance._id, {
       status: "DISPATCHED",
     });
 
@@ -251,8 +334,8 @@ export async function POST(request: NextRequest) {
       },
       status: "ASSIGNED",
       dispatchedAt: new Date(),
-      assignedAmbulanceId: String(ambulance._id),
-      assignedAmbulanceVehicle: ambulance.vehicleNumber,
+      assignedAmbulanceId: String(matchedAmbulance._id),
+      assignedAmbulanceVehicle: matchedAmbulance.vehicleNumber,
       destinationHospitalId: assignedHospital
         ? String(assignedHospital._id)
         : null,
@@ -263,7 +346,7 @@ export async function POST(request: NextRequest) {
     // Mock Fast2SMS
     console.log("[Fast2SMS MOCK] Dispatch notification:", {
       to: patientContact,
-      message: `EMERGENCY DISPATCH: ${patientName}. Symptoms: ${symptoms.join(", ")}. Priority: ${priority}. Ambulance: ${ambulance.vehicleNumber}. Hospital: ${assignedHospital?.name || "TBD"}.`,
+      message: `EMERGENCY DISPATCH: ${patientName}. Symptoms: ${symptoms.join(", ")}. Priority: ${priority}. Ambulance: ${matchedAmbulance.vehicleNumber}. Hospital: ${assignedHospital?.name || "TBD"}.`,
       timestamp: new Date().toISOString(),
     });
 
@@ -286,11 +369,11 @@ export async function POST(request: NextRequest) {
           createdAt: emergency.createdAt,
         },
         ambulance: {
-          id: ambulance._id,
-          vehicleNumber: ambulance.vehicleNumber,
-          driverName: ambulance.driverName,
+          id: matchedAmbulance._id,
+          vehicleNumber: matchedAmbulance.vehicleNumber,
+          driverName: matchedAmbulance.driverName,
           status: "DISPATCHED",
-          location: ambulance.location,
+          location: matchedAmbulance.location,
         },
         hospital: assignedHospital
           ? {
@@ -298,6 +381,7 @@ export async function POST(request: NextRequest) {
               name: assignedHospital.name,
               address: assignedHospital.address,
               availableBeds: assignedHospital.availableBeds,
+              location: assignedHospital.location,
             }
           : null,
       },

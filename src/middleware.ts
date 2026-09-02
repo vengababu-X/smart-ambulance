@@ -3,10 +3,13 @@ import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 
 // Routes that require authentication
-const protectedRoutes = ["/admin", "/driver", "/hospital"];
+const protectedRoutes = ["/admin", "/driver", "/hospital", "/profile"];
 
 // Routes that are always public (no auth required)
 const publicRoutes = ["/login", "/register", "/api/auth", "/api/seed"];
+
+// Routes accessible by all authenticated users regardless of role
+const universalAuthRoutes = ["/profile"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -43,6 +46,11 @@ export async function middleware(request: NextRequest) {
 
   const userRole = token.role as string;
 
+  // Allow all authenticated users to access universal routes (e.g., /profile)
+  if (universalAuthRoutes.some((route) => pathname.startsWith(route))) {
+    return NextResponse.next();
+  }
+
   // Role-based access checks
   switch (userRole) {
     case "admin":
@@ -57,7 +65,11 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(pendingUrl);
       }
       if (!pathname.startsWith("/driver")) {
-        const driverPath = `/driver/${token.vehicleNumber || "AMB-101"}`;
+        // If driver has no vehicleNumber, redirect to profile to complete setup
+        if (!token.vehicleNumber) {
+          return NextResponse.redirect(new URL("/profile", request.url));
+        }
+        const driverPath = `/driver/${token.vehicleNumber}`;
         return NextResponse.redirect(new URL(driverPath, request.url));
       }
       // Verify driver is accessing their own HUD
@@ -79,7 +91,11 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(pendingUrl);
       }
       if (!pathname.startsWith("/hospital")) {
-        const hospitalPath = `/hospital/${token.hospitalId || "HOSP-001"}`;
+        // If hospital staff has no hospitalId, redirect to profile to complete setup
+        if (!token.hospitalId) {
+          return NextResponse.redirect(new URL("/profile", request.url));
+        }
+        const hospitalPath = `/hospital/${token.hospitalId}`;
         return NextResponse.redirect(new URL(hospitalPath, request.url));
       }
       // Verify hospital staff is accessing their own ER

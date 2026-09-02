@@ -21,9 +21,9 @@ function getRoleRedirectPath(role: string, vehicleNumber?: string, hospitalId?: 
     case "admin":
       return "/admin";
     case "driver":
-      return `/driver/${vehicleNumber || "AMB-101"}`;
+      return vehicleNumber ? `/driver/${vehicleNumber}` : "/profile";
     case "hospital":
-      return `/hospital/${hospitalId || "HOSP-001"}`;
+      return hospitalId ? `/hospital/${hospitalId}` : "/profile";
     case "patient":
     default:
       return "/";

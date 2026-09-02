@@ -7,6 +7,7 @@ export interface IHospital extends Document {
   availableBeds: number;
   icuCapacity: number;
   availableIcu: number;
+  staffCount: number;
   isAtCapacity: boolean;
   location: {
     type: "Point";
@@ -51,6 +52,12 @@ const HospitalSchema = new Schema<IHospital>(
       required: true,
       min: 0,
       default: 10,
+    },
+    staffCount: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
     },
     isAtCapacity: {
       type: Boolean,

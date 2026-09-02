@@ -67,7 +67,7 @@ export default function Navbar() {
         // Drivers only see their assigned vehicle HUD
         return [
           {
-            href: `/driver/${user.vehicleNumber || "AMB-101"}`,
+            href: user.vehicleNumber ? `/driver/${user.vehicleNumber}` : "/profile",
             label: "Driver HUD",
             icon: Truck,
           },
@@ -77,7 +77,7 @@ export default function Navbar() {
         // Hospital staff only see their ER queue
         return [
           {
-            href: `/hospital/${user.hospitalId || "HOSP-001"}`,
+            href: user.hospitalId ? `/hospital/${user.hospitalId}` : "/profile",
             label: "ER Queue",
             icon: Building2,
           },
@@ -146,15 +146,27 @@ export default function Navbar() {
                   {config.label}
                 </span>
 
-                {/* User Name + Email */}
-                <div className="hidden sm:flex flex-col items-end">
+                {/* User Name + Email — clickable to profile */}
+                <Link
+                  href="/profile"
+                  className="hidden sm:flex flex-col items-end rounded-lg px-2 py-1 transition hover:bg-slate-800/50"
+                >
                   <span className="text-sm text-slate-300 max-w-[140px] truncate">
                     {user.name}
                   </span>
                   <span className="text-xs text-slate-500 max-w-[140px] truncate">
                     {user.email}
                   </span>
-                </div>
+                </Link>
+
+                {/* Profile Link */}
+                <Link
+                  href="/profile"
+                  className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-400 transition hover:bg-slate-800 hover:text-white"
+                >
+                  <User className="h-4 w-4" />
+                  <span className="hidden lg:inline">Profile</span>
+                </Link>
 
                 {/* Sign Out */}
                 <button

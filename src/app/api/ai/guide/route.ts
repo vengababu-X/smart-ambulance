@@ -11,7 +11,7 @@ interface GuideRequest {
   context?: string;
 }
 
-function mockEmergencyGuide(data: GuideRequest): {
+function ruleBasedGuide(data: GuideRequest): {
   instructions: string[];
   calmingMessage: string;
   checklist: string[];
@@ -219,16 +219,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Fallback to mock emergency guide
-    const mockResult = mockEmergencyGuide(body);
+    // Fallback to rule-based emergency guide when Ollama is unavailable
+    const guideResult = ruleBasedGuide(body);
 
-    console.log("[AI GUIDE] Mock fallback result generated.");
+    console.log("[AI GUIDE] Rule-based fallback result generated.");
 
     return NextResponse.json(
       {
         success: true,
-        ...mockResult,
-        source: "mock",
+        ...guideResult,
+        source: "rule-based",
       },
       { status: 200 }
     );

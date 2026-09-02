@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
-export type AmbulanceStatus = "AVAILABLE" | "DISPATCHED" | "MAINTENANCE";
+export type AmbulanceStatus = "AVAILABLE" | "DISPATCHED" | "MAINTENANCE" | "OFFLINE";
 
 export interface IAmbulance extends Document {
   vehicleNumber: string;
@@ -31,7 +31,7 @@ const AmbulanceSchema = new Schema<IAmbulance>(
     },
     status: {
       type: String,
-      enum: ["AVAILABLE", "DISPATCHED", "MAINTENANCE"],
+      enum: ["AVAILABLE", "DISPATCHED", "MAINTENANCE", "OFFLINE"],
       default: "AVAILABLE",
       required: true,
     },

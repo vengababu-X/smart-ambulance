@@ -55,6 +55,7 @@ export async function POST(request: NextRequest) {
     const totalBeds = parseInt(body.totalBeds) || availableBeds;
     const icuCapacity = parseInt(body.icuCapacity) || 0;
     const availableIcu = parseInt(body.availableIcu) || icuCapacity;
+    const staffCount = parseInt(body.staffCount) || 0;
 
     // Validation
     if (!name) {
@@ -96,6 +97,7 @@ export async function POST(request: NextRequest) {
       totalBeds,
       icuCapacity,
       availableIcu,
+      staffCount,
       isAtCapacity: availableBeds === 0,
     });
 
@@ -114,6 +116,9 @@ export async function POST(request: NextRequest) {
           location: hospital.location,
           availableBeds: hospital.availableBeds,
           totalBeds: hospital.totalBeds,
+          icuCapacity: hospital.icuCapacity,
+          availableIcu: hospital.availableIcu,
+          staffCount: hospital.staffCount,
         },
       },
       { status: 201 }
@@ -122,6 +127,93 @@ export async function POST(request: NextRequest) {
     console.error("Admin hospital create error:", error);
     return NextResponse.json(
       { success: false, error: "Failed to create hospital." },
+      { status: 500 }
+    );
+  }
+}
+
+// PATCH: Update hospital capacity fields (admin only)
+export async function PATCH(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session || session.user.role !== "admin") {
+      return NextResponse.json(
+        { success: false, error: "Unauthorized. Admin access required." },
+        { status: 403 }
+      );
+    }
+
+    await connectToDatabase();
+
+    const body = await request.json();
+    const hospitalId = body.id || body.hospitalId;
+
+    if (!hospitalId) {
+      return NextResponse.json(
+        { success: false, error: "Hospital ID is required." },
+        { status: 400 }
+      );
+    }
+
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) {
+      return NextResponse.json(
+        { success: false, error: "Hospital not found." },
+        { status: 404 }
+      );
+    }
+
+    // Build update payload — only accept known capacity fields
+    const updateFields: Record<string, unknown> = {};
+    if (body.totalBeds !== undefined) updateFields.totalBeds = Math.max(0, parseInt(body.totalBeds) || 0);
+    if (body.availableBeds !== undefined) updateFields.availableBeds = Math.max(0, parseInt(body.availableBeds) || 0);
+    if (body.icuCapacity !== undefined) updateFields.icuCapacity = Math.max(0, parseInt(body.icuCapacity) || 0);
+    if (body.availableIcu !== undefined) updateFields.availableIcu = Math.max(0, parseInt(body.availableIcu) || 0);
+    if (body.staffCount !== undefined) updateFields.staffCount = Math.max(0, parseInt(body.staffCount) || 0);
+    if (body.name !== undefined) updateFields.name = String(body.name).trim();
+    if (body.address !== undefined) updateFields.address = String(body.address).trim();
+
+    // Recalculate isAtCapacity from availableBeds
+    if (updateFields.availableBeds !== undefined) {
+      updateFields.isAtCapacity = updateFields.availableBeds === 0;
+    }
+
+    const updated = await Hospital.findByIdAndUpdate(
+      hospitalId,
+      { $set: updateFields },
+      { new: true, runValidators: true }
+    );
+
+    if (!updated) {
+      return NextResponse.json(
+        { success: false, error: "Update failed." },
+        { status: 500 }
+      );
+    }
+
+    console.log(
+      `[ADMIN] Hospital updated: ${updated.name} (${updated._id}) fields: ${Object.keys(updateFields).join(", ")} by ${session.user.email}`
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: `Hospital "${updated.name}" updated successfully.`,
+      hospital: {
+        id: updated._id,
+        name: updated.name,
+        address: updated.address,
+        totalBeds: updated.totalBeds,
+        availableBeds: updated.availableBeds,
+        icuCapacity: updated.icuCapacity,
+        availableIcu: updated.availableIcu,
+        staffCount: updated.staffCount,
+        isAtCapacity: updated.isAtCapacity,
+      },
+    });
+  } catch (error) {
+    console.error("Admin hospital update error:", error);
+    return NextResponse.json(
+      { success: false, error: "Failed to update hospital." },
       { status: 500 }
     );
   }

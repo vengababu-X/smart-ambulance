@@ -55,6 +55,59 @@ const symptomOptions: SymptomOption[] = [
   { label: "Other (type below)", value: "OTHER" },
 ];
 
+type QuickEmergencyOption = {
+  id: string;
+  label: string;
+  sublabel: string;
+  symptoms: string[];
+  icon: typeof Heart;
+  gradient: string;
+  shadow: string;
+  ring: string;
+};
+const quickEmergencyOptions: QuickEmergencyOption[] = [
+  {
+    id: "chest-pain",
+    label: "Heart Attack / Chest Pain",
+    sublabel: "Severe chest pain, pressure, or cardiac symptoms",
+    symptoms: ["Severe chest pain", "Heart attack"],
+    icon: Heart,
+    gradient: "from-red-600 via-red-500 to-rose-600",
+    shadow: "shadow-red-900/40",
+    ring: "ring-red-500/30",
+  },
+  {
+    id: "accident",
+    label: "Accident / Severe Injury",
+    sublabel: "Road accident, trauma, or major physical injury",
+    symptoms: ["Road accident / trauma", "Severe bleeding"],
+    icon: AlertTriangle,
+    gradient: "from-orange-600 via-amber-500 to-yellow-600",
+    shadow: "shadow-orange-900/40",
+    ring: "ring-orange-500/30",
+  },
+  {
+    id: "breathing",
+    label: "Severe Breathing Trouble",
+    sublabel: "Difficulty breathing, choking, or respiratory distress",
+    symptoms: ["Difficulty breathing"],
+    icon: Activity,
+    gradient: "from-blue-600 via-blue-500 to-cyan-600",
+    shadow: "shadow-blue-900/40",
+    ring: "ring-blue-500/30",
+  },
+  {
+    id: "unknown",
+    label: "Emergency / Unknown",
+    sublabel: "General emergency or unsure of the condition",
+    symptoms: ["Emergency / Unknown condition"],
+    icon: Siren,
+    gradient: "from-purple-600 via-violet-500 to-fuchsia-600",
+    shadow: "shadow-purple-900/40",
+    ring: "ring-purple-500/30",
+  },
+];
+
 interface Coordinates { lat: number; lng: number }
 interface DispatchResponse {
   success: boolean; message?: string;
@@ -251,6 +304,7 @@ function SOSPortal() {
   const [showAIGuide, setShowAIGuide] = useState(false);
   const [aiGuide, setAIGuide] = useState<AIGuideResponse | null>(null);
   const [isLoadingGuide, setIsLoadingGuide] = useState(false);
+  const [activeQuickOption, setActiveQuickOption] = useState<string | null>(null);
 
   useEffect(() => {
     if (sessionUser && !nameInitialized) {
@@ -298,14 +352,15 @@ function SOSPortal() {
   }, [patientLocation, getCurrentLocation]);
   const cancelCountdown = useCallback(() => { if (countdownRef.current) clearInterval(countdownRef.current); setCountdown(null); setStatusMessage("SOS cancelled."); }, []);
 
-  const executeDispatch = useCallback(async () => {
+  const executeDispatch = useCallback(async (overrideSymptoms?: string[]) => {
     if (!patientLocation) return;
+    const symptomsToUse = overrideSymptoms || effectiveSymptoms;
     setIsDispatching(true); setIsSuccess(false); setErrorMessage(""); setStatusMessage("Running AI triage assessment..."); setAiResponse(null); setDispatchData(null);
     try {
-      const ai = await (await fetch("/api/ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symptoms: effectiveSymptoms }) })).json() as AIResponse;
+      const ai = await (await fetch("/api/ai", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symptoms: symptomsToUse }) })).json() as AIResponse;
       setAiResponse(ai);
       setStatusMessage("Dispatching EMS...");
-      const sos = await (await fetch("/api/dispatch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ latitude: patientLocation.lat, longitude: patientLocation.lng, symptoms: effectiveSymptoms, severityScore: ai.score || 5, patientName: resolvedPatientName, patientContact: resolvedPatientContact, aiTriageNotes: ai.notes || "" }) })).json() as DispatchResponse;
+      const sos = await (await fetch("/api/dispatch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ latitude: patientLocation.lat, longitude: patientLocation.lng, symptoms: symptomsToUse, severityScore: ai.score || 5, patientName: resolvedPatientName, patientContact: resolvedPatientContact, aiTriageNotes: ai.notes || "" }) })).json() as DispatchResponse;
       if (!sos.success || !sos.ambulance) throw new Error(sos.error || sos.message || "Dispatch failed.");
       setDispatchData(sos);
       if (sos.ambulance?.location?.coordinates) { const [lng, lat] = sos.ambulance.location.coordinates; setAmbulanceLocation({ lat, lng }); }
@@ -315,6 +370,30 @@ function SOSPortal() {
     finally { setIsDispatching(false); }
   }, [patientLocation, effectiveSymptoms, resolvedPatientName, resolvedPatientContact]);
   executeDispatchRef.current = executeDispatch;
+
+  // ═══ 1-Click Quick Emergency handler ═══
+  const handleQuickEmergency = useCallback(
+    async (option: QuickEmergencyOption) => {
+      // Ensure GPS is available
+      if (!patientLocation) {
+        getCurrentLocation();
+        setErrorMessage(
+          "Acquiring GPS location. Please wait a moment and try again."
+        );
+        return;
+      }
+      setActiveQuickOption(option.id);
+      setErrorMessage("");
+      setStatusMessage(
+        `Dispatching for: ${option.symptoms[0]}...`
+      );
+      // Trigger dispatch instantly with preset symptoms — no countdown
+      await executeDispatch(option.symptoms);
+      // Reset quick option state after dispatch completes
+      setActiveQuickOption(null);
+    },
+    [patientLocation, getCurrentLocation, executeDispatch]
+  );
 
   const fetchAIGuide = useCallback(async () => {
     setIsLoadingGuide(true); setAIGuide(null); setShowAIGuide(true);
@@ -375,14 +454,85 @@ function SOSPortal() {
             {/* SOS */}
             {!isSuccess && (
               <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-5 shadow-xl shadow-slate-950/30">
-                <h2 className="mb-4 text-lg font-semibold">Emergency Dispatch</h2>
+                <h2 className="mb-2 text-lg font-semibold">Emergency Dispatch</h2>
                 <div className="space-y-4">
-                  <label className="block text-sm font-medium text-slate-300">Select symptom
-                    <select value={selectedSymptom} onChange={(e) => setSelectedSymptom(e.target.value)} className="mt-2 w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white outline-none transition focus:border-red-500">
-                      {symptomOptions.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
-                    </select>
-                  </label>
-                  {selectedSymptom === "OTHER" && <input value={customSymptom} onChange={(e) => setCustomSymptom(e.target.value)} placeholder="Describe your symptoms..." className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition focus:border-red-500" />}
+                  {/* ═══ 1-Click Quick Emergency ═══ */}
+                  <div>
+                    <div className="mb-3 flex items-center gap-2">
+                      <Zap className="h-4 w-4 text-amber-400" />
+                      <p className="text-sm font-bold uppercase tracking-wider text-amber-300">
+                        1-Click Quick Emergency
+                      </p>
+                    </div>
+                    <p className="mb-4 text-xs text-slate-400">
+                      Tap a button below for instant dispatch — no typing needed.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {quickEmergencyOptions.map((option) => {
+                        const Icon = option.icon;
+                        const isActive = activeQuickOption === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => handleQuickEmergency(option)}
+                            disabled={isDispatching || isGettingLocation || !!activeQuickOption}
+                            className={`group relative flex flex-col items-start rounded-2xl border-2 p-4 text-left transition-all ${
+                              isActive
+                                ? `border-white/40 bg-gradient-to-br ${option.gradient} text-white scale-[1.02] shadow-lg ${option.shadow}`
+                                : `border-slate-700 bg-slate-950/80 hover:border-slate-500 hover:bg-slate-800/80`
+                            } disabled:cursor-not-allowed disabled:opacity-50`}
+                          >
+                            <div className={`mb-2 flex h-10 w-10 items-center justify-center rounded-xl ${
+                              isActive
+                                ? "bg-white/20 text-white"
+                                : "bg-slate-800 text-slate-300 group-hover:bg-slate-700"
+                            }`}>
+                              {isDispatching && isActive ? (
+                                <Loader2 className="h-5 w-5 animate-spin" />
+                              ) : (
+                                <Icon className="h-5 w-5" />
+                              )}
+                            </div>
+                            <p className={`text-sm font-bold leading-tight ${
+                              isActive ? "text-white" : "text-slate-200"
+                            }`}>
+                              {option.label}
+                            </p>
+                            <p className={`mt-1 text-[11px] leading-snug ${
+                              isActive ? "text-white/70" : "text-slate-500"
+                            }`}>
+                              {option.sublabel}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* ═══ Divider ═══ */}
+                  <div className="flex items-center gap-3">
+                    <div className="h-px flex-1 bg-slate-700" />
+                    <span className="text-xs font-medium text-slate-500">or describe manually</span>
+                    <div className="h-px flex-1 bg-slate-700" />
+                  </div>
+
+                  {/* ═══ Other / Custom Condition ═══ */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300">
+                      Other / Custom Condition
+                    </label>
+                    <input
+                      value={customSymptom}
+                      onChange={(e) => {
+                        setCustomSymptom(e.target.value);
+                        setSelectedSymptom("OTHER");
+                        setActiveQuickOption(null);
+                      }}
+                      placeholder="Describe your symptoms..."
+                      className="mt-2 w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition placeholder:text-slate-600 focus:border-red-500"
+                    />
+                  </div>
 
                   {countdown !== null ? (
                     <div className="space-y-3">
@@ -423,6 +573,16 @@ function SOSPortal() {
                       <div><p className="text-xs text-slate-500">Driver</p><p className="mt-1 font-bold text-white">{dispatchData.ambulance?.driverName || "Assigned"}</p></div>
                     </div>
                     {dispatchData.ambulance?.driverPhone && <div className="mt-3 flex items-center gap-2 rounded-xl bg-slate-800/50 px-3 py-2"><Phone className="h-3.5 w-3.5 text-blue-400" /><span className="text-sm text-slate-200">{dispatchData.ambulance.driverPhone}</span></div>}
+                  {/* Manual Call Button */}
+                  <div className="mt-3">
+                    <a
+                      href={`tel:${dispatchData.ambulance?.driverPhone || "+919876543210"}`}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-green-600 to-green-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-green-900/30 transition hover:from-green-500 hover:to-green-400 hover:shadow-green-700/40"
+                    >
+                      <Phone className="h-4 w-4" />
+                      Call Emergency Driver Now
+                    </a>
+                  </div>
                   </div>
                   <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4"><p className="text-xs text-slate-500">Destination Hospital</p><p className="mt-1 font-bold text-white">{dispatchData.emergency.destinationHospitalName || "Routing to nearest facility"}</p></div>
                   <div className="grid grid-cols-3 gap-3">
@@ -447,7 +607,7 @@ function SOSPortal() {
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-3"><Brain className="h-5 w-5 text-blue-400" /><h2 className="text-lg font-semibold text-blue-200">AI Triage Assessment</h2></div>
               <div className="flex items-center gap-3">
-                {aiResponse.source && <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-400">{aiResponse.source === "ollama" ? "Llama 3" : "Mock Fallback"}</span>}
+                {aiResponse.source && <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-400">{aiResponse.source === "ollama" ? "Llama 3 AI" : "Rule-Based Triage"}</span>}
                 {aiResponse.category && <span className={`rounded-full px-3 py-1.5 text-xs font-black uppercase tracking-wider ${aiResponse.category === "CRITICAL" ? "bg-red-500/20 text-red-300" : aiResponse.category === "URGENT" ? "bg-yellow-500/20 text-yellow-300" : "bg-emerald-500/20 text-emerald-300"}`}>{aiResponse.category}</span>}
                 {aiResponse.score && <span className="rounded-full bg-slate-800 px-3 py-1.5 text-sm font-bold text-white">Severity: {aiResponse.score}/10</span>}
               </div>
@@ -471,7 +631,7 @@ function SOSPortal() {
                   {aiGuide.calmingMessage && <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4"><div className="flex items-start gap-3"><Info className="mt-0.5 h-5 w-5 flex-shrink-0 text-emerald-400" /><p className="text-sm font-medium text-emerald-200 leading-relaxed">{aiGuide.calmingMessage}</p></div></div>}
                   {aiGuide.instructions && aiGuide.instructions.length > 0 && <div><h3 className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-blue-300"><Activity className="h-4 w-4" /> First-Aid Steps</h3><div className="space-y-2">{aiGuide.instructions.map((inst, i) => <div key={i} className="flex gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3"><span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-blue-500/20 text-xs font-bold text-blue-300">{i + 1}</span><p className="text-sm text-slate-200 leading-relaxed">{inst}</p></div>)}</div></div>}
                   {aiGuide.checklist && aiGuide.checklist.length > 0 && <div><h3 className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-amber-300"><CheckCircle2 className="h-4 w-4" /> Preparation Checklist</h3><div className="space-y-2">{aiGuide.checklist.map((item, i) => <div key={i} className="flex gap-3 rounded-xl border border-slate-800 bg-slate-950/40 p-3"><span className="mt-0.5 h-4 w-4 flex-shrink-0 rounded border border-slate-600" /><p className="text-sm text-slate-200">{item}</p></div>)}</div></div>}
-                  <div className="flex items-center justify-center gap-2 pt-2"><span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-400">{aiGuide.source === "ollama" ? "Powered by Llama 3" : "AI Emergency Assistant"}</span><span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-400">For informational purposes only</span></div>
+                  <div className="flex items-center justify-center gap-2 pt-2"><span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-400">{aiGuide.source === "ollama" ? "Powered by Llama 3" : "Rule-Based Emergency Guide"}</span><span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-400">For informational purposes only</span></div>
                 </div>
               )}
             </div>
@@ -494,8 +654,8 @@ export default function HomePage() {
     if (status === "authenticated" && session?.user) {
       const role = session.user.role;
       if (role === "admin") router.replace("/admin");
-      else if (role === "driver") router.replace(`/driver/${session.user.vehicleNumber || "AMB-101"}`);
-      else if (role === "hospital") router.replace(`/hospital/${session.user.hospitalId || "HOSP-001"}`);
+      else if (role === "driver") router.replace(session.user.vehicleNumber ? `/driver/${session.user.vehicleNumber}` : "/profile");
+      else if (role === "hospital") router.replace(session.user.hospitalId ? `/hospital/${session.user.hospitalId}` : "/profile");
       // patient stays on /
     }
   }, [status, session, router]);

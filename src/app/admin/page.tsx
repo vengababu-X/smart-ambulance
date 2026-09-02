@@ -22,6 +22,9 @@ import {
   Users,
   UserCheck,
   UserX,
+  Pencil,
+  Save,
+  X,
 } from "lucide-react";
 import usePolling from "@/hooks/usePolling";
 
@@ -39,8 +42,13 @@ interface AmbulanceRecord {
   _id: string;
   vehicleNumber: string;
   driverName: string;
+  driverEmail?: string;
+  driverPhone?: string;
+  driverUserId?: string;
   status: "AVAILABLE" | "DISPATCHED" | "MAINTENANCE";
   location?: { coordinates?: [number, number] };
+  isApproved?: boolean;
+  source?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -87,6 +95,7 @@ interface HospitalRecord {
   availableBeds: number;
   icuCapacity: number;
   availableIcu: number;
+  staffCount: number;
   isAtCapacity: boolean;
   location?: { coordinates?: [number, number] };
   createdAt?: string;
@@ -145,13 +154,23 @@ export default function AdminPage() {
   const [hospitalForm, setHospitalForm] = useState({
     name: "",
     address: "",
-    lat: "",
-    lng: "",
+    lat: "14.9132",
+    lng: "79.9929",
     availableBeds: "20",
     totalBeds: "20",
     icuCapacity: "5",
     availableIcu: "5",
+    staffCount: "0",
   });
+  const [editingHospitalId, setEditingHospitalId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    totalBeds: "",
+    availableBeds: "",
+    icuCapacity: "",
+    availableIcu: "",
+    staffCount: "",
+  });
+  const [editSaving, setEditSaving] = useState(false);
 
   /* ─── Ambulance Creation State ─── */
   const [showAmbulanceForm, setShowAmbulanceForm] = useState(false);
@@ -262,7 +281,7 @@ export default function AdminPage() {
         return;
       }
       setShowHospitalForm(false);
-      setHospitalForm({ name: "", address: "", lat: "", lng: "", availableBeds: "20", totalBeds: "20", icuCapacity: "5", availableIcu: "5" });
+      setHospitalForm({ name: "", address: "", lat: "14.9132", lng: "79.9929", availableBeds: "20", totalBeds: "20", icuCapacity: "5", availableIcu: "5", staffCount: "0" });
       void fetchHospitals();
     } catch {
       alert("Network error. Please try again.");
@@ -281,6 +300,43 @@ export default function AdminPage() {
       void fetchHospitals();
     } catch {
       alert("Network error. Please try again.");
+    }
+  };
+
+  const startEditHospital = (hospital: HospitalRecord) => {
+    setEditingHospitalId(hospital._id);
+    setEditForm({
+      totalBeds: String(hospital.totalBeds),
+      availableBeds: String(hospital.availableBeds),
+      icuCapacity: String(hospital.icuCapacity),
+      availableIcu: String(hospital.availableIcu),
+      staffCount: String(hospital.staffCount),
+    });
+  };
+
+  const cancelEditHospital = () => {
+    setEditingHospitalId(null);
+  };
+
+  const handleUpdateHospital = async (hospitalId: string) => {
+    setEditSaving(true);
+    try {
+      const response = await fetch("/api/admin/hospitals", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: hospitalId, ...editForm }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "Update failed");
+        return;
+      }
+      setEditingHospitalId(null);
+      void fetchHospitals();
+    } catch {
+      alert("Network error. Please try again.");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -468,13 +524,13 @@ export default function AdminPage() {
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
-                    <input type="number" step="any" required placeholder="e.g. 17.6868" value={ambulanceForm.lat}
+                    <input type="number" step="any" required placeholder="e.g. 14.9132" value={ambulanceForm.lat}
                       onChange={(e) => setAmbulanceForm({ ...ambulanceForm, lat: e.target.value })}
                       className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500" />
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
-                    <input type="number" step="any" required placeholder="e.g. 83.2185" value={ambulanceForm.lng}
+                    <input type="number" step="any" required placeholder="e.g. 79.9929" value={ambulanceForm.lng}
                       onChange={(e) => setAmbulanceForm({ ...ambulanceForm, lng: e.target.value })}
                       className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500" />
                   </div>
@@ -499,7 +555,7 @@ export default function AdminPage() {
               <div className="rounded-3xl border border-dashed border-slate-700 bg-slate-900/70 p-10 text-center text-slate-400">
                 <Ambulance className="mx-auto mb-3 h-10 w-10 text-slate-500" />
                 <p className="text-lg font-medium text-slate-300">No ambulances registered</p>
-                <p className="mt-2 text-sm">Visit <code className="text-blue-400">/api/seed</code> to seed test data, or add one above.</p>
+                <p className="mt-2 text-sm">Register driver accounts and approve them from the Approvals tab to build the fleet.</p>
               </div>
             ) : (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -510,6 +566,8 @@ export default function AdminPage() {
                         <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Vehicle</p>
                         <h2 className="mt-2 text-2xl font-black text-white">{ambulance.vehicleNumber}</h2>
                         <p className="text-sm text-slate-400">{ambulance.driverName}</p>
+                        {ambulance.driverEmail && <p className="text-xs text-slate-500">{ambulance.driverEmail}</p>}
+                        {ambulance.driverPhone && <p className="text-xs text-slate-500">{ambulance.driverPhone}</p>}
                       </div>
                       <div className="flex flex-col items-end gap-2">
                         <span className={`rounded-full px-2.5 py-1 text-xs font-black uppercase tracking-[0.18em] ${
@@ -694,19 +752,19 @@ export default function AdminPage() {
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Address</label>
-                    <input type="text" required placeholder="e.g. 123 Main Street" value={hospitalForm.address}
+                    <input type="text" required placeholder="e.g. 123 Main Street, Kavali, AP" value={hospitalForm.address}
                       onChange={(e) => setHospitalForm({ ...hospitalForm, address: e.target.value })}
                       className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500" />
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
-                    <input type="number" step="any" required placeholder="e.g. 17.6868" value={hospitalForm.lat}
+                    <input type="number" step="any" required placeholder="e.g. 14.9132" value={hospitalForm.lat}
                       onChange={(e) => setHospitalForm({ ...hospitalForm, lat: e.target.value })}
                       className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500" />
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
-                    <input type="number" step="any" required placeholder="e.g. 83.2185" value={hospitalForm.lng}
+                    <input type="number" step="any" required placeholder="e.g. 79.9929" value={hospitalForm.lng}
                       onChange={(e) => setHospitalForm({ ...hospitalForm, lng: e.target.value })}
                       className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500" />
                   </div>
@@ -734,6 +792,12 @@ export default function AdminPage() {
                       onChange={(e) => setHospitalForm({ ...hospitalForm, availableIcu: e.target.value })}
                       className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500" />
                   </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Total Staff</label>
+                    <input type="number" min="0" required value={hospitalForm.staffCount}
+                      onChange={(e) => setHospitalForm({ ...hospitalForm, staffCount: e.target.value })}
+                      className="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500" />
+                  </div>
                 </div>
                 <div className="mt-4 flex gap-2">
                   <button type="submit" className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500">
@@ -755,47 +819,111 @@ export default function AdminPage() {
               <div className="rounded-3xl border border-dashed border-slate-700 bg-slate-900/70 p-10 text-center text-slate-400">
                 <Building2 className="mx-auto mb-3 h-10 w-10 text-slate-500" />
                 <p className="text-lg font-medium text-slate-300">No hospitals registered</p>
-                <p className="mt-2 text-sm">Add a hospital above or visit <code className="text-blue-400">/api/seed</code> to seed data.</p>
+                <p className="mt-2 text-sm">Click &quot;Add Hospital&quot; above to register a new hospital.</p>
               </div>
             ) : (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {hospitals.map((hospital) => (
-                  <div key={hospital._id} className="rounded-3xl border border-slate-800 bg-slate-900/70 p-5 shadow-xl shadow-slate-950/20">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Hospital</p>
-                        <h2 className="mt-2 text-xl font-black text-white">{hospital.name}</h2>
-                        <p className="text-xs text-slate-400 mt-1">{hospital.address}</p>
+                {hospitals.map((hospital) => {
+                  const isEditing = editingHospitalId === hospital._id;
+                  return (
+                    <div key={hospital._id} className="rounded-3xl border border-slate-800 bg-slate-900/70 p-5 shadow-xl shadow-slate-950/20">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Hospital</p>
+                          <h2 className="mt-2 text-xl font-black text-white">{hospital.name}</h2>
+                          <p className="text-xs text-slate-400 mt-1">{hospital.address}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {hospital.isAtCapacity ? (
+                            <span className="rounded-full bg-red-500/20 px-2.5 py-1 text-xs font-black text-red-300">AT CAPACITY</span>
+                          ) : (
+                            <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-black text-emerald-300">OPEN</span>
+                          )}
+                          {!isEditing && (
+                            <button type="button" onClick={() => startEditHospital(hospital)}
+                              className="rounded-lg bg-blue-500/10 p-1.5 text-blue-400 transition hover:bg-blue-500/20">
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          <button type="button" onClick={() => void handleDeleteHospital(hospital._id)}
+                            className="rounded-lg bg-red-500/10 p-1.5 text-red-400 transition hover:bg-red-500/20">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        {hospital.isAtCapacity ? (
-                          <span className="rounded-full bg-red-500/20 px-2.5 py-1 text-xs font-black text-red-300">AT CAPACITY</span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-black text-emerald-300">OPEN</span>
-                        )}
-                        <button type="button" onClick={() => void handleDeleteHospital(hospital._id)}
-                          className="rounded-lg bg-red-500/10 p-1.5 text-red-400 transition hover:bg-red-500/20">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
+
+                      {isEditing ? (
+                        /* ─── Inline Capacity Editor ─── */
+                        <div className="mt-4 space-y-3">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Total Beds</label>
+                              <input type="number" min="0" value={editForm.totalBeds}
+                                onChange={(e) => setEditForm({ ...editForm, totalBeds: e.target.value })}
+                                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500" />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Available Beds</label>
+                              <input type="number" min="0" value={editForm.availableBeds}
+                                onChange={(e) => setEditForm({ ...editForm, availableBeds: e.target.value })}
+                                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500" />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Total ICU</label>
+                              <input type="number" min="0" value={editForm.icuCapacity}
+                                onChange={(e) => setEditForm({ ...editForm, icuCapacity: e.target.value })}
+                                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500" />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Available ICU</label>
+                              <input type="number" min="0" value={editForm.availableIcu}
+                                onChange={(e) => setEditForm({ ...editForm, availableIcu: e.target.value })}
+                                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500" />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Staff Count</label>
+                            <input type="number" min="0" value={editForm.staffCount}
+                              onChange={(e) => setEditForm({ ...editForm, staffCount: e.target.value })}
+                              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-500" />
+                          </div>
+                          <div className="flex gap-2">
+                            <button type="button" onClick={() => void handleUpdateHospital(hospital._id)} disabled={editSaving}
+                              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-60">
+                              {editSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />} {editSaving ? "Saving..." : "Save"}
+                            </button>
+                            <button type="button" onClick={cancelEditHospital} disabled={editSaving}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-700 disabled:opacity-60">
+                              <X className="h-3.5 w-3.5" /> Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* ─── Read-only Capacity Display ─── */
+                        <div className="mt-4 grid grid-cols-3 gap-3">
+                          <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-center">
+                            <p className="text-xs text-slate-500">Beds</p>
+                            <p className="text-lg font-black text-white">{hospital.availableBeds}<span className="text-sm text-slate-500">/{hospital.totalBeds}</span></p>
+                          </div>
+                          <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-center">
+                            <p className="text-xs text-slate-500">ICU</p>
+                            <p className="text-lg font-black text-white">{hospital.availableIcu}<span className="text-sm text-slate-500">/{hospital.icuCapacity}</span></p>
+                          </div>
+                          <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-center">
+                            <p className="text-xs text-slate-500">Staff</p>
+                            <p className="text-lg font-black text-white">{hospital.staffCount ?? 0}</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {hospital.location?.coordinates && (
+                        <p className="mt-3 text-xs text-slate-600">
+                          📍 {hospital.location.coordinates[1].toFixed(5)}, {hospital.location.coordinates[0].toFixed(5)}
+                        </p>
+                      )}
                     </div>
-                    <div className="mt-4 grid grid-cols-2 gap-3">
-                      <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-center">
-                        <p className="text-xs text-slate-500">Beds</p>
-                        <p className="text-lg font-black text-white">{hospital.availableBeds}<span className="text-sm text-slate-500">/{hospital.totalBeds}</span></p>
-                      </div>
-                      <div className="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-center">
-                        <p className="text-xs text-slate-500">ICU</p>
-                        <p className="text-lg font-black text-white">{hospital.availableIcu}<span className="text-sm text-slate-500">/{hospital.icuCapacity}</span></p>
-                      </div>
-                    </div>
-                    {hospital.location?.coordinates && (
-                      <p className="mt-3 text-xs text-slate-600">
-                        📍 {hospital.location.coordinates[1].toFixed(5)}, {hospital.location.coordinates[0].toFixed(5)}
-                      </p>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -967,15 +1095,16 @@ export default function AdminPage() {
             </div>
             <AdminMap
               hospitalLocations={
-                ambulances
-                  .filter((a) => a.location?.coordinates)
-                  .map((a) => ({
-                    id: a._id,
-                    name: a.vehicleNumber,
-                    location: { lat: a.location!.coordinates![1], lng: a.location!.coordinates![0] },
+                hospitals
+                  .filter((h) => h.location?.coordinates)
+                  .map((h) => ({
+                    id: h._id,
+                    name: h.name,
+                    location: { lat: h.location!.coordinates![1], lng: h.location!.coordinates![0] },
+                    availableBeds: h.availableBeds,
                   })) ?? []
               }
-              center={{ lat: 17.6868, lng: 83.2185 }}
+              center={{ lat: 14.9132, lng: 79.9929 }}
               zoom={12}
             />
           </div>

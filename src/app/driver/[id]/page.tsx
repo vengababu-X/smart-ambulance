@@ -12,8 +12,12 @@ import {
   Truck,
   Stethoscope,
   MapPin,
-  Phone,
+  PhoneCall,
   Timer,
+  Hospital,
+  ArrowRight,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import usePolling from "@/hooks/usePolling";
 
@@ -46,11 +50,21 @@ interface EmergencyRecord {
   status?: string;
   assignedAmbulanceVehicle?: string;
   destinationHospitalName?: string;
+  destinationHospitalId?: string;
   dispatchedAt?: string;
+  pickedUpAt?: string;
+  arrivedAt?: string;
   vitals?: {
     heartRate: number | null;
     spo2: number | null;
   };
+}
+
+interface HospitalRecord {
+  _id: string;
+  name: string;
+  location?: { coordinates?: [number, number] };
+  availableBeds?: number;
 }
 
 interface VitalsData {
@@ -59,6 +73,7 @@ interface VitalsData {
   timestamp: string;
 }
 
+type DriverStatus = "AVAILABLE" | "OFFLINE";
 type GeofenceStatus = "DISPATCHED" | "EN_ROUTE" | "ARRIVED" | "COMPLETED";
 
 function simulateVitals(priority?: string): VitalsData {
@@ -83,8 +98,7 @@ function haversineDistance(a: Coordinates, b: Coordinates): number {
   const Δφ = ((b.lat - a.lat) * Math.PI) / 180;
   const Δλ = ((b.lng - a.lng) * Math.PI) / 180;
   const x =
-    Math.sin(Δφ / 2) ** 2 +
-    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+    Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
@@ -101,7 +115,10 @@ export default function DriverPage({
   params: { id: string };
 }) {
   const vehicleNumber = params.id;
+
+  // ── Core state ──
   const [isTracking, setIsTracking] = useState(false);
+  const [driverStatus, setDriverStatus] = useState<DriverStatus>("AVAILABLE");
   const [statusMessage, setStatusMessage] = useState("Ready for dispatch.");
   const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
@@ -109,11 +126,16 @@ export default function DriverPage({
     useState<EmergencyRecord | null>(null);
   const [patientCoordinates, setPatientCoordinates] =
     useState<Coordinates | null>(null);
+  const [hospitalCoordinates, setHospitalCoordinates] =
+    useState<Coordinates | null>(null);
   const [vitals, setVitals] = useState<VitalsData | null>(null);
   const [geofenceStatus, setGeofenceStatus] =
     useState<GeofenceStatus>("DISPATCHED");
   const [eta, setEta] = useState<string>("Calculating...");
+  const [etaToHospital, setEtaToHospital] = useState<string>("—");
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [isTogglingStatus, setIsTogglingStatus] = useState(false);
+
   const watchIdRef = useRef<number | null>(null);
   const vitalsIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -122,7 +144,7 @@ export default function DriverPage({
   const [elapsedMs, setElapsedMs] = useState(0);
   const stopwatchRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Live stopwatch timer
+  // ── Live stopwatch timer ──
   useEffect(() => {
     if (dispatchStartTime) {
       stopwatchRef.current = setInterval(() => {
@@ -134,21 +156,25 @@ export default function DriverPage({
     }
   }, [dispatchStartTime]);
 
-  // Cleanup on unmount
+  // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
       if (stopwatchRef.current) clearInterval(stopwatchRef.current);
+      if (vitalsIntervalRef.current) clearInterval(vitalsIntervalRef.current);
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
     };
   }, []);
 
-  // Start stopwatch when emergency is found
+  // ── Start stopwatch when emergency is found ──
   useEffect(() => {
     if (activeEmergency?.dispatchedAt && !dispatchStartTime) {
       setDispatchStartTime(new Date(activeEmergency.dispatchedAt).getTime());
     }
   }, [activeEmergency?.dispatchedAt, dispatchStartTime]);
 
-  // Simulate vitals telemetry
+  // ── Simulate vitals telemetry while emergency is active ──
   useEffect(() => {
     if (activeEmergency) {
       setVitals(simulateVitals(activeEmergency.priority));
@@ -163,7 +189,7 @@ export default function DriverPage({
     };
   }, [activeEmergency]);
 
-  // Calculate ETA
+  // ── Calculate ETA to patient ──
   useEffect(() => {
     if (coordinates && patientCoordinates) {
       const distanceM = haversineDistance(coordinates, patientCoordinates);
@@ -174,7 +200,79 @@ export default function DriverPage({
     }
   }, [coordinates, patientCoordinates]);
 
-  // Fetch assigned emergency (polling)
+  // ── Calculate ETA from patient to hospital ──
+  useEffect(() => {
+    if (patientCoordinates && hospitalCoordinates) {
+      const distanceM = haversineDistance(patientCoordinates, hospitalCoordinates);
+      const distanceKm = distanceM / 1000;
+      const avgSpeedKmh = 40;
+      const minutes = Math.ceil((distanceKm / avgSpeedKmh) * 60);
+      setEtaToHospital(minutes <= 1 ? "Arriving now" : `~${minutes} min`);
+    }
+  }, [patientCoordinates, hospitalCoordinates]);
+
+  // ═══════════════════════════════════════════════════════════
+  // 1. STATUS TOGGLE — Go Online / Go Offline
+  // ═══════════════════════════════════════════════════════════
+  const toggleDriverStatus = useCallback(async () => {
+    const newStatus: DriverStatus =
+      driverStatus === "AVAILABLE" ? "OFFLINE" : "AVAILABLE";
+
+    setIsTogglingStatus(true);
+    try {
+      const response = await fetch("/api/driver/status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vehicleNumber, status: newStatus }),
+      });
+
+      if (response.ok) {
+        setDriverStatus(newStatus);
+        setStatusMessage(
+          newStatus === "AVAILABLE"
+            ? "Online and ready for dispatch."
+            : "Offline. You will not receive dispatches."
+        );
+      } else {
+        const data = await response.json();
+        setErrorMessage(data.error || "Failed to toggle status.");
+      }
+    } catch (error) {
+      console.error("Status toggle failed:", error);
+      setErrorMessage("Failed to update status. Please try again.");
+    } finally {
+      setIsTogglingStatus(false);
+    }
+  }, [vehicleNumber, driverStatus]);
+
+  // ═══════════════════════════════════════════════════════════
+  // 2. FETCH DRIVER STATUS ON MOUNT
+  // ═══════════════════════════════════════════════════════════
+  useEffect(() => {
+    async function fetchStatus() {
+      try {
+        const res = await fetch(
+          `/api/driver/status?vehicleNumber=${encodeURIComponent(vehicleNumber)}`,
+          { cache: "no-store" }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ambulance?.status) {
+            const s = data.ambulance.status;
+            if (s === "OFFLINE") setDriverStatus("OFFLINE");
+            else setDriverStatus("AVAILABLE");
+          }
+        }
+      } catch {
+        /* ignore — default is AVAILABLE */
+      }
+    }
+    fetchStatus();
+  }, [vehicleNumber]);
+
+  // ═══════════════════════════════════════════════════════════
+  // 3. FETCH ASSIGNED EMERGENCY (polling)
+  // ═══════════════════════════════════════════════════════════
   const fetchEmergency = useCallback(async () => {
     if (!vehicleNumber) return [];
     try {
@@ -185,30 +283,65 @@ export default function DriverPage({
       const match = emergencies.find(
         (item) =>
           item.assignedAmbulanceVehicle === vehicleNumber &&
-          ["PENDING", "ASSIGNED", "EN_ROUTE"].includes(item.status ?? "")
+          ["PENDING", "ASSIGNED", "EN_ROUTE", "ARRIVED"].includes(
+            item.status ?? ""
+          )
       );
       if (match) {
         setActiveEmergency(match);
+
+        // Set patient coordinates
         if (match.patientCoordinates?.coordinates) {
           const [lng, lat] = match.patientCoordinates.coordinates;
           setPatientCoordinates({ lat, lng });
         }
+
+        // Map emergency status → geofence status
         if (match.status === "PENDING" || match.status === "ASSIGNED") {
           setGeofenceStatus("DISPATCHED");
+        } else if (match.status === "EN_ROUTE") {
+          setGeofenceStatus("EN_ROUTE");
+        } else if (match.status === "ARRIVED") {
+          setGeofenceStatus("ARRIVED");
+        }
+
+        // Fetch hospital coordinates if not yet loaded
+        if (match.destinationHospitalId && !hospitalCoordinates) {
+          try {
+            const hospRes = await fetch("/api/hospitals", { cache: "no-store" });
+            if (hospRes.ok) {
+              const hospData = await hospRes.json();
+              const hospitals: HospitalRecord[] = hospData.hospitals ?? [];
+              const dest = hospitals.find(
+                (h) => h._id === match.destinationHospitalId
+              );
+              if (dest?.location?.coordinates) {
+                const [hLng, hLat] = dest.location.coordinates;
+                setHospitalCoordinates({ lat: hLat, lng: hLng });
+              }
+            }
+          } catch {
+            /* hospital location unavailable */
+          }
         }
       } else {
         setActiveEmergency(null);
         setPatientCoordinates(null);
+        setHospitalCoordinates(null);
+        setDispatchStartTime(null);
+        setElapsedMs(0);
       }
     } catch (error) {
       console.error("Failed to load emergency assignment:", error);
     }
     return [];
-  }, [vehicleNumber]);
+  }, [vehicleNumber, hospitalCoordinates]);
 
   usePolling(fetchEmergency, 5000);
 
-  // Update emergency status
+  // ═══════════════════════════════════════════════════════════
+  // 4. UPDATE EMERGENCY STATUS
+  // ═══════════════════════════════════════════════════════════
   const updateEmergencyStatus = useCallback(
     async (newStatus: string) => {
       if (!activeEmergency) return;
@@ -225,20 +358,27 @@ export default function DriverPage({
         });
 
         if (response.ok) {
-          setStatusMessage(
-            newStatus === "EN_ROUTE"
-              ? "Patient picked up. En route to hospital."
-              : newStatus === "ARRIVED"
-              ? "Arrived at hospital. Ready for handover."
-              : `Status updated to ${newStatus}.`
-          );
-          if (newStatus === "ARRIVED") {
+          if (newStatus === "EN_ROUTE") {
+            // "Accept / En Route to Patient" — start GPS tracking
+            setStatusMessage("Dispatch accepted. En route to patient.");
+            setGeofenceStatus("EN_ROUTE");
+            setIsTracking(true);
+          } else if (newStatus === "ARRIVED") {
+            // "Patient Picked Up" — now en route to hospital
+            setStatusMessage("Patient picked up. En route to hospital.");
             setGeofenceStatus("ARRIVED");
-            // Stop GPS tracking
+          } else if (newStatus === "COMPLETED") {
+            // "Arrived at Hospital" — trip resolved
+            setStatusMessage("Arrived at hospital. Trip completed. Ambulance freed.");
+            setGeofenceStatus("COMPLETED");
             setIsTracking(false);
+          } else {
+            setStatusMessage(`Status updated to ${newStatus}.`);
           }
-          // Refresh emergency data
           await fetchEmergency();
+        } else {
+          const data = await response.json();
+          setErrorMessage(data.error || "Failed to update status.");
         }
       } catch (error) {
         console.error("Failed to update status:", error);
@@ -250,7 +390,9 @@ export default function DriverPage({
     [activeEmergency, fetchEmergency]
   );
 
-  // Geofencing
+  // ═══════════════════════════════════════════════════════════
+  // 5. GEOFENCING — proximity-based status hints
+  // ═══════════════════════════════════════════════════════════
   useEffect(() => {
     if (!coordinates || !patientCoordinates || !isTracking) return;
     const distanceM = haversineDistance(coordinates, patientCoordinates);
@@ -267,7 +409,9 @@ export default function DriverPage({
     }
   }, [coordinates, patientCoordinates, isTracking]);
 
-  // GPS tracking
+  // ═══════════════════════════════════════════════════════════
+  // 6. GPS TRACKING — pushes live coordinates to MongoDB
+  // ═══════════════════════════════════════════════════════════
   useEffect(() => {
     if (!isTracking) {
       if (watchIdRef.current !== null) {
@@ -292,7 +436,7 @@ export default function DriverPage({
         setCoordinates(nextCoordinates);
         setErrorMessage("");
 
-        // Update ambulance location on server
+        // Push live GPS to MongoDB for admin live map
         try {
           await fetch("/api/driver/location", {
             method: "POST",
@@ -330,6 +474,7 @@ export default function DriverPage({
     };
   }, [vehicleNumber, isTracking]);
 
+  // ── Derived UI state ──
   const geofenceColor = useMemo(() => {
     switch (geofenceStatus) {
       case "ARRIVED":
@@ -343,10 +488,21 @@ export default function DriverPage({
     }
   }, [geofenceStatus]);
 
+  const workflowStep = useMemo(() => {
+    if (!activeEmergency) return "idle";
+    const s = activeEmergency.status;
+    if (s === "ASSIGNED" || s === "PENDING") return "accept";
+    if (s === "EN_ROUTE") return "pickup";
+    if (s === "ARRIVED") return "transport";
+    return "idle";
+  }, [activeEmergency]);
+
+  const isOnline = driverStatus === "AVAILABLE";
+
   return (
     <main className="min-h-screen bg-slate-950 text-white">
       <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Header */}
+        {/* ═══ Header ═══ */}
         <header className="mb-8 rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl shadow-slate-950/30">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-4">
@@ -363,22 +519,102 @@ export default function DriverPage({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setIsTracking((current) => !current)}
-              className={`rounded-full px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] transition ${
-                isTracking
-                  ? "bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/30"
-                  : "bg-red-500 text-white shadow-lg shadow-red-500/30"
-              }`}
-            >
-              {isTracking ? "Stop Trip" : "Start GPS Tracking"}
-            </button>
+            <div className="flex items-center gap-3">
+              {/* ── Status Toggle: Go Online / Go Offline ── */}
+              <button
+                type="button"
+                onClick={toggleDriverStatus}
+                disabled={isTogglingStatus}
+                className={`flex items-center gap-2 rounded-full px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] transition ${
+                  isOnline
+                    ? "bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/30"
+                    : "bg-slate-700 text-slate-300 shadow-lg shadow-slate-950/30"
+                } disabled:opacity-50`}
+              >
+                {isTogglingStatus ? (
+                  <span className="animate-spin">⏳</span>
+                ) : isOnline ? (
+                  <Wifi className="h-4 w-4" />
+                ) : (
+                  <WifiOff className="h-4 w-4" />
+                )}
+                {isOnline ? "Go Offline" : "Go Online"}
+              </button>
+
+              {/* ── GPS Tracking Toggle ── */}
+              <button
+                type="button"
+                onClick={() => setIsTracking((current) => !current)}
+                className={`rounded-full px-5 py-3 text-sm font-semibold uppercase tracking-[0.18em] transition ${
+                  isTracking
+                    ? "bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/30"
+                    : "bg-red-500 text-white shadow-lg shadow-red-500/30"
+                }`}
+              >
+                {isTracking ? "Stop GPS" : "Start GPS"}
+              </button>
+            </div>
           </div>
         </header>
 
+        {/* ═══ Workflow Progress Bar ═══ */}
+        {activeEmergency && (
+          <div className="mb-6 rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+            <div className="flex items-center justify-between">
+              {[
+                { key: "accept", label: "Accept Dispatch", icon: MapPin },
+                { key: "pickup", label: "Patient Picked Up", icon: ArrowRight },
+                { key: "transport", label: "Arrived at Hospital", icon: Hospital },
+              ].map((step, i) => {
+                const isActive = workflowStep === step.key;
+                const isPast =
+                  (workflowStep === "pickup" && i === 0) ||
+                  (workflowStep === "transport" && i <= 1) ||
+                  (workflowStep === "idle" && activeEmergency.status === "ARRIVED");
+                return (
+                  <div key={step.key} className="flex items-center gap-2">
+                    <div
+                      className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${
+                        isActive
+                          ? "bg-blue-500 text-white"
+                          : isPast
+                          ? "bg-emerald-500/20 text-emerald-300"
+                          : "bg-slate-800 text-slate-500"
+                      }`}
+                    >
+                      {isPast ? (
+                        <CheckCircle2 className="h-4 w-4" />
+                      ) : (
+                        <step.icon className="h-4 w-4" />
+                      )}
+                    </div>
+                    <span
+                      className={`text-xs font-semibold ${
+                        isActive
+                          ? "text-white"
+                          : isPast
+                          ? "text-emerald-300"
+                          : "text-slate-500"
+                      }`}
+                    >
+                      {step.label}
+                    </span>
+                    {i < 2 && (
+                      <ArrowRight
+                        className={`h-4 w-4 ${
+                          isPast ? "text-emerald-400" : "text-slate-600"
+                        }`}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-          {/* Left Column — Status & Vitals */}
+          {/* ═══ Left Column — Status & Vitals ═══ */}
           <section className="space-y-5">
             {/* GPS Status */}
             <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-5">
@@ -404,11 +640,25 @@ export default function DriverPage({
                     Status
                   </p>
                   <p className="mt-2 text-white">{statusMessage}</p>
-                  <div className="mt-2">
+                  <div className="mt-2 flex items-center gap-2">
                     <span
                       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${geofenceColor}`}
                     >
                       {geofenceStatus}
+                    </span>
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${
+                        isOnline
+                          ? "border-emerald-500/30 bg-emerald-500/20 text-emerald-300"
+                          : "border-slate-600 bg-slate-800 text-slate-400"
+                      }`}
+                    >
+                      {isOnline ? (
+                        <Wifi className="h-3 w-3" />
+                      ) : (
+                        <WifiOff className="h-3 w-3" />
+                      )}
+                      {isOnline ? "Online" : "Offline"}
                     </span>
                   </div>
                 </div>
@@ -428,11 +678,22 @@ export default function DriverPage({
                   </div>
                 )}
 
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
-                    ETA to Patient
-                  </p>
-                  <p className="mt-2 text-xl font-bold text-white">{eta}</p>
+                {/* ETA Cards */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                      ETA to Patient
+                    </p>
+                    <p className="mt-2 text-xl font-bold text-white">{eta}</p>
+                  </div>
+                  <div className="rounded-2xl border border-blue-500/30 bg-blue-500/10 p-4">
+                    <p className="text-xs uppercase tracking-[0.18em] text-blue-300">
+                      ETA to Hospital
+                    </p>
+                    <p className="mt-2 text-xl font-bold text-blue-300">
+                      {etaToHospital}
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -500,7 +761,7 @@ export default function DriverPage({
 
                   {activeEmergency.patientContact && (
                     <div className="flex items-center gap-2 text-sm text-slate-300">
-                      <Phone className="h-3 w-3" />
+                      <PhoneCall className="h-3 w-3" />
                       {activeEmergency.patientContact}
                     </div>
                   )}
@@ -524,12 +785,44 @@ export default function DriverPage({
                   </div>
                 </div>
 
-                {/* Status Update Buttons */}
+                {/* Call Patient Button */}
+                {activeEmergency.patientContact && (
+                  <div className="mt-4">
+                    <a
+                      href={`tel:${activeEmergency.patientContact}`}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-green-600 to-green-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-green-900/30 transition hover:from-green-500 hover:to-green-400"
+                    >
+                      <PhoneCall className="h-4 w-4" />
+                      Call Patient Now
+                    </a>
+                  </div>
+                )}
+
+                {/* ═══ Workflow Action Buttons ═══ */}
                 <div className="mt-5 space-y-3">
-                  {activeEmergency.status === "ASSIGNED" && (
+                  {/* ── Step 1: Accept / En Route to Patient ── */}
+                  {(activeEmergency.status === "ASSIGNED" ||
+                    activeEmergency.status === "PENDING") && (
                     <button
                       type="button"
                       onClick={() => updateEmergencyStatus("EN_ROUTE")}
+                      disabled={isUpdatingStatus || !isOnline}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-blue-900/30 transition hover:bg-blue-500 disabled:opacity-50"
+                    >
+                      {isUpdatingStatus ? (
+                        <span className="animate-spin">⏳</span>
+                      ) : (
+                        <Navigation className="h-4 w-4" />
+                      )}
+                      Accept / En Route to Patient
+                    </button>
+                  )}
+
+                  {/* ── Step 2: Patient Picked Up ── */}
+                  {activeEmergency.status === "EN_ROUTE" && (
+                    <button
+                      type="button"
+                      onClick={() => updateEmergencyStatus("ARRIVED")}
                       disabled={isUpdatingStatus}
                       className="flex w-full items-center justify-center gap-2 rounded-2xl bg-yellow-500 px-4 py-3 text-sm font-bold text-slate-950 transition hover:bg-yellow-400 disabled:opacity-50"
                     >
@@ -542,11 +835,11 @@ export default function DriverPage({
                     </button>
                   )}
 
-                  {(activeEmergency.status === "EN_ROUTE" ||
-                    activeEmergency.status === "ASSIGNED") && (
+                  {/* ── Step 3: Arrived at Hospital ── */}
+                  {activeEmergency.status === "ARRIVED" && (
                     <button
                       type="button"
-                      onClick={() => updateEmergencyStatus("ARRIVED")}
+                      onClick={() => updateEmergencyStatus("COMPLETED")}
                       disabled={isUpdatingStatus}
                       className="flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-50"
                     >
@@ -555,14 +848,18 @@ export default function DriverPage({
                       ) : (
                         <CheckCircle2 className="h-4 w-4" />
                       )}
-                      Arrived at ER
+                      Arrived at Hospital
                     </button>
                   )}
 
-                  {activeEmergency.status === "ARRIVED" && (
+                  {/* ── Trip Completed ── */}
+                  {activeEmergency.status === "COMPLETED" && (
                     <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-center text-sm text-emerald-300">
                       <CheckCircle2 className="mx-auto mb-2 h-5 w-5" />
-                      <p className="font-semibold">Awaiting Hospital Handover</p>
+                      <p className="font-semibold">Trip Completed</p>
+                      <p className="mt-1 text-xs text-emerald-400/70">
+                        Ambulance freed. Ready for next dispatch.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -574,7 +871,9 @@ export default function DriverPage({
                   No active dispatch
                 </p>
                 <p className="mt-2 text-sm">
-                  Waiting for an emergency assignment...
+                  {isOnline
+                    ? "Waiting for an emergency assignment..."
+                    : "Go online to receive dispatches."}
                 </p>
               </div>
             )}
@@ -612,19 +911,54 @@ export default function DriverPage({
             )}
           </section>
 
-          {/* Right Column — Map */}
+          {/* ═══ Right Column — Map with Route ═══ */}
           <aside className="space-y-5">
             <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4 shadow-xl shadow-slate-950/30">
-              <h2 className="mb-3 text-lg font-semibold">Live Navigation</h2>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Live Navigation</h2>
+                {patientCoordinates && hospitalCoordinates && (
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500" /> Ambulance
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full bg-red-500" /> Patient
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full bg-blue-500" /> Hospital
+                    </span>
+                  </div>
+                )}
+              </div>
               <DriverMap
                 patientLocation={patientCoordinates}
                 ambulanceLocation={coordinates}
+                hospitalLocation={hospitalCoordinates}
                 center={
                   coordinates ??
-                  patientCoordinates ?? { lat: 17.6868, lng: 83.2185 }
+                  patientCoordinates ?? { lat: 14.9132, lng: 79.9929 }
                 }
                 zoom={14}
+                showRoute={!!(patientCoordinates && (coordinates || hospitalCoordinates))}
               />
+              {/* Route Legend */}
+              {patientCoordinates && hospitalCoordinates && (
+                <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+                    Route Info
+                  </p>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <p className="text-slate-500">To Patient</p>
+                      <p className="font-bold text-white">{eta}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-500">To Hospital</p>
+                      <p className="font-bold text-blue-300">{etaToHospital}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </aside>
         </div>
